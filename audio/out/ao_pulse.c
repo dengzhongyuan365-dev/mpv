@@ -584,8 +584,16 @@ static double get_delay_hackfixed(struct ao *ao)
         GENERIC_ERR_MSG("pa_stream_get_sample_spec() failed");
         return 0;
     }
-    // data left in PulseAudio's main buffers (not written to sink yet)
-    int64_t latency = pa_bytes_to_usec(ti->write_index - ti->read_index, ss);
+    // data left in PulseAudio's main buffers (not written to sink yet).
+    // With prebuf=0 (which mpv sets), PulseAudio documents that on underrun
+    // read_index overtakes write_index, making the difference negative.
+    // Passing a negative int64_t to pa_bytes_to_usec() (which takes uint64_t)
+    // causes implicit conversion to a huge value, which then overflows
+    // MP_TIME_S_TO_NS() to INT64_MAX, making mp_cond_timedwait() call
+    // pthread_cond_wait() instead of pthread_cond_timedwait(), resulting in
+    // ao_drain() hanging forever (observed on LoongArch + PulseAudio).
+    int64_t buf_diff = ti->write_index - ti->read_index;
+    int64_t latency = buf_diff > 0 ? (int64_t)pa_bytes_to_usec((uint64_t)buf_diff, ss) : 0;
     // since this info may be from a while ago, playback has progressed since
     latency -= ti->transport_usec;
     // data already moved from buffers to sink, but not played yet
